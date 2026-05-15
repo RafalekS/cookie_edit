@@ -1,0 +1,56 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash",
+            "Edit",
+            "Write",
+            "Read",
+            "WebFetch",
+            "WebSearch",
+            "mcp__*"
+        ],
+        "deny": []
+    },
+    "hooks": {
+        "Notification": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "$HOME/.claude_automation/hooks/notify.sh"
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "$HOME/.claude_automation/hooks/on_stop.sh"
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "$HOME/.claude_automation/hooks/on_session_end.sh"
+                    }
+                ]
+            }
+        ],
+        "PreCompact": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "$HOME/.claude_automation/hooks/on_compact.sh"
+                    }
+                ]
+            }
+        ]
+    }
+}
