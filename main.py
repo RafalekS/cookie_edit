@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QToolBar, QStatusBar, QFileDialog, QMessageBox,
     QLineEdit, QLabel, QComboBox, QDialog, QHeaderView,
-    QAbstractItemView, QPushButton, QMenu, QInputDialog, QListWidget,
+    QAbstractItemView, QPushButton, QMenu, QListWidget,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -16,6 +16,7 @@ from modules.cookie_formats import detect_format, parse_file_as, save_file
 from modules.edit_dialog import CookieEditDialog
 from modules.browser_import import BrowserImportDialog
 from modules.domain_export import DomainExportDialog
+from modules.filter_dialog import FilterEditDialog, SCOPE_KEYS as FILTER_SCOPE_KEYS
 from modules.utils import load_config, save_config, validate_cookies_for_format
 
 FORMAT_KEYS = ["netscape", "json", "header"]
@@ -358,9 +359,8 @@ class MainWindow(QMainWindow):
                 act.setData(("apply", f["text"], f["scope"]))
 
         menu.addSeparator()
-        menu.addAction("Save current filter…").setData(("save", None, None))
-        if saved:
-            menu.addAction("Manage saved filters…").setData(("manage", None, None))
+        menu.addAction("New saved filter…").setData(("new", None, None))
+        menu.addAction("Manage saved filters…").setData(("manage", None, None))
 
         chosen = menu.exec(self._presets_btn.mapToGlobal(
             self._presets_btn.rect().bottomLeft()
@@ -372,58 +372,86 @@ class MainWindow(QMainWindow):
         if action == "apply":
             self._scope_combo.setCurrentIndex(SCOPE_OPTIONS.index(scope))
             self._filter_edit.setText(text)
-        elif action == "save":
-            self._save_current_filter()
+        elif action == "new":
+            self._new_saved_filter()
         elif action == "manage":
             self._manage_saved_filters()
 
-    def _save_current_filter(self):
-        text = self._filter_edit.text().strip()
-        if not text:
-            QMessageBox.information(self, "Save Filter", "No filter is currently active.")
+    def _new_saved_filter(self):
+        dlg = FilterEditDialog(parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        name, ok = QInputDialog.getText(self, "Save Filter", "Name for this filter:")
-        if not ok or not name.strip():
-            return
-        name = name.strip()
-        scope = SCOPE_OPTIONS[self._scope_combo.currentIndex()]
+        f = dlg.get_filter()
         saved = self._config.get("saved_filters", [])
-        for f in saved:
-            if f["name"] == name:
-                f["text"] = text
-                f["scope"] = scope
+        for existing in saved:
+            if existing["name"] == f["name"]:
+                existing["text"] = f["text"]
+                existing["scope"] = f["scope"]
                 self._persist_config()
                 return
-        saved.append({"name": name, "text": text, "scope": scope})
+        saved.append(f)
         self._config["saved_filters"] = saved
         self._persist_config()
 
     def _manage_saved_filters(self):
         saved = self._config.get("saved_filters", [])
-        if not saved:
-            QMessageBox.information(self, "Saved Filters", "No saved filters yet.")
-            return
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Manage Saved Filters")
-        dlg.setMinimumSize(480, 300)
+        dlg.setMinimumSize(520, 340)
         layout = QVBoxLayout(dlg)
 
         lst = QListWidget()
-        for f in saved:
-            scope_label = {"both": "Domain+Name", "domain": "Domain", "name": "Name"}.get(
-                f["scope"], f["scope"]
-            )
-            lst.addItem(f"{f['name']}  [{scope_label}]  —  {f['text'][:70]}")
+
+        def _refresh_list():
+            lst.clear()
+            for f in saved:
+                scope_label = {"both": "Domain+Name", "domain": "Domain", "name": "Name"}.get(
+                    f["scope"], f["scope"]
+                )
+                lst.addItem(f"{f['name']}  [{scope_label}]  —  {f['text'][:60]}")
+
+        _refresh_list()
         layout.addWidget(lst)
 
         btn_row = QHBoxLayout()
-        del_btn = QPushButton("Delete selected")
+        new_btn  = QPushButton("New Filter")
+        edit_btn = QPushButton("Edit Selected")
+        del_btn  = QPushButton("Delete Selected")
         close_btn = QPushButton("Close")
-        btn_row.addWidget(del_btn)
+        for b in (new_btn, edit_btn, del_btn):
+            btn_row.addWidget(b)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
+
+        def _new():
+            d = FilterEditDialog(parent=dlg)
+            if d.exec() != QDialog.DialogCode.Accepted:
+                return
+            f = d.get_filter()
+            for existing in saved:
+                if existing["name"] == f["name"]:
+                    existing.update(f)
+                    _refresh_list()
+                    self._persist_config()
+                    return
+            saved.append(f)
+            self._config["saved_filters"] = saved
+            _refresh_list()
+            self._persist_config()
+
+        def _edit():
+            row = lst.currentRow()
+            if row < 0:
+                return
+            d = FilterEditDialog(filter_data=saved[row], parent=dlg)
+            if d.exec() != QDialog.DialogCode.Accepted:
+                return
+            saved[row] = d.get_filter()
+            self._config["saved_filters"] = saved
+            _refresh_list()
+            self._persist_config()
 
         def _delete():
             row = lst.currentRow()
@@ -431,9 +459,11 @@ class MainWindow(QMainWindow):
                 return
             saved.pop(row)
             self._config["saved_filters"] = saved
+            _refresh_list()
             self._persist_config()
-            lst.takeItem(row)
 
+        new_btn.clicked.connect(_new)
+        edit_btn.clicked.connect(_edit)
         del_btn.clicked.connect(_delete)
         close_btn.clicked.connect(dlg.accept)
         dlg.exec()
