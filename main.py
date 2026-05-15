@@ -204,6 +204,14 @@ class MainWindow(QMainWindow):
         header.sectionMoved.connect(self._schedule_config_save)
         header.sortIndicatorChanged.connect(self._schedule_config_save)
 
+    def _apply_column_visibility(self, fmt):
+        """Show all columns for netscape/json; hide metadata columns for header format."""
+        from modules.cookie_model import COLUMNS
+        header_hidden = {"domain", "flag", "path", "secure", "expiry"}
+        for i, col in enumerate(COLUMNS):
+            hide = (fmt == "header") and (col in header_hidden)
+            self._table.setColumnHidden(i, hide)
+
     def _populate_and_restore(self):
         """Call after loading cookies: enable sorting, then restore state."""
         self._table.setSortingEnabled(True)
@@ -323,6 +331,7 @@ class MainWindow(QMainWindow):
         self._proxy.set_filter("", scope=CookieFilterProxyModel.SCOPE_BOTH)
 
         self._source_model.load(data.get("cookies", []))
+        self._apply_column_visibility(fmt)
         self._populate_and_restore()
 
         self._format_combo.blockSignals(True)
@@ -620,6 +629,7 @@ class MainWindow(QMainWindow):
         self._current_format = "netscape"
         self._comments = []
         self._source_model.load(imported)
+        self._apply_column_visibility("netscape")
         self._populate_and_restore()
 
         self._format_combo.blockSignals(True)

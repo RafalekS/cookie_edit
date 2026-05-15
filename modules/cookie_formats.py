@@ -6,25 +6,29 @@ COLUMNS = ["domain", "flag", "path", "secure", "expiry", "name", "value"]
 
 def detect_format(filepath):
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read(4096).strip()
+        content = f.read(4096)
 
-    if not content:
+    stripped = content.lstrip()
+    if not stripped:
         return "netscape"
 
-    # JSON array/object
-    if content.startswith("[") or content.startswith("{"):
+    first_char = stripped[0]
+
+    # JSON: first non-whitespace char is [ or { → parse full file to confirm
+    if first_char in ('[', '{'):
         try:
-            json.loads(content if len(content) < 4096 else _read_all(filepath))
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                json.load(f)
             return "json"
         except (json.JSONDecodeError, Exception):
             pass
 
-    # Netscape: comment header or tab-separated
-    if content.startswith("#") or "\t" in content.split("\n")[0]:
+    # Netscape: comment header or tab-separated first line
+    first_line = stripped.split("\n")[0]
+    if stripped.startswith("#") or "\t" in first_line:
         return "netscape"
 
     # Header string: single line with semicolons and equals
-    first_line = content.split("\n")[0].strip()
     if ";" in first_line and "=" in first_line:
         return "header"
 
