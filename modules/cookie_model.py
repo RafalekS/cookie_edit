@@ -93,21 +93,43 @@ class CookieTableModel(QAbstractTableModel):
 
 
 class CookieFilterProxyModel(QSortFilterProxyModel):
+    # scope constants
+    SCOPE_BOTH   = "both"
+    SCOPE_DOMAIN = "domain"
+    SCOPE_NAME   = "name"
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._filter_text = ""
+        self._terms = []        # list of lowercase strings (OR logic)
+        self._scope = self.SCOPE_BOTH
 
-    def set_filter(self, text):
-        self._filter_text = text.lower().strip()
+    def set_filter(self, text, scope=None):
+        if scope is not None:
+            self._scope = scope
+        self._terms = [t.strip().lower() for t in text.split(",") if t.strip()]
+        self.invalidateFilter()
+
+    def set_scope(self, scope):
+        self._scope = scope
         self.invalidateFilter()
 
     def filterAcceptsRow(self, source_row, source_parent):
-        if not self._filter_text:
+        if not self._terms:
             return True
         model = self.sourceModel()
-        domain = (model.data(model.index(source_row, COLUMNS.index("domain"))) or "").lower()
-        name = (model.data(model.index(source_row, COLUMNS.index("name"))) or "").lower()
-        return self._filter_text in domain or self._filter_text in name
+
+        candidates = []
+        if self._scope in (self.SCOPE_BOTH, self.SCOPE_DOMAIN):
+            candidates.append(
+                (model.data(model.index(source_row, COLUMNS.index("domain"))) or "").lower()
+            )
+        if self._scope in (self.SCOPE_BOTH, self.SCOPE_NAME):
+            candidates.append(
+                (model.data(model.index(source_row, COLUMNS.index("name"))) or "").lower()
+            )
+
+        # Row accepted if ANY term matches ANY candidate field
+        return any(term in candidate for term in self._terms for candidate in candidates)
 
     def lessThan(self, left, right):
         col = left.column()

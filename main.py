@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QToolBar, QStatusBar, QFileDialog, QMessageBox,
     QLineEdit, QLabel, QComboBox, QDialog, QHeaderView,
-    QAbstractItemView,
+    QAbstractItemView, QPushButton, QMenu,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -22,6 +22,32 @@ FORMAT_KEYS = ["netscape", "json", "header"]
 FORMAT_LABELS = ["Netscape / cookies.txt", "JSON (Cookie-Editor)", "Header String"]
 FORMAT_EXTS = {"netscape": "*.txt", "json": "*.json", "header": "*.txt"}
 OPEN_FILTER = "Cookie Files (*.txt *.json);;All Files (*)"
+
+SCOPE_OPTIONS = [
+    CookieFilterProxyModel.SCOPE_BOTH,
+    CookieFilterProxyModel.SCOPE_DOMAIN,
+    CookieFilterProxyModel.SCOPE_NAME,
+]
+
+# Quick filter presets: (label, search_text, scope)
+QUICK_FILTERS = [
+    (
+        "Auth / Login cookies",
+        "session, token, auth, login, sid, ssid, jwt, oauth, userid, "
+        "user_id, credential, apikey, api_key, access_key, refresh, bearer",
+        CookieFilterProxyModel.SCOPE_NAME,
+    ),
+    (
+        "YouTube / Google  (yt-dlp)",
+        "youtube.com, google.com, googlevideo.com, ggpht.com",
+        CookieFilterProxyModel.SCOPE_DOMAIN,
+    ),
+    (
+        "Clear filter",
+        "",
+        CookieFilterProxyModel.SCOPE_BOTH,
+    ),
+]
 
 
 class MainWindow(QMainWindow):
@@ -63,9 +89,19 @@ class MainWindow(QMainWindow):
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Search:"))
         self._filter_edit = QLineEdit()
-        self._filter_edit.setPlaceholderText("Filter by domain or cookie name…")
+        self._filter_edit.setPlaceholderText("Filter — comma-separated for OR  e.g. session, token, sid")
         self._filter_edit.textChanged.connect(self._on_filter_changed)
         bar.addWidget(self._filter_edit, 1)
+
+        self._scope_combo = QComboBox()
+        self._scope_combo.addItems(["Domain + Name", "Domain only", "Name only"])
+        self._scope_combo.currentIndexChanged.connect(self._on_scope_changed)
+        bar.addWidget(self._scope_combo)
+
+        self._presets_btn = QPushButton("Quick Filter ▾")
+        self._presets_btn.setToolTip("Apply a preset search pattern")
+        self._presets_btn.clicked.connect(self._show_presets_menu)
+        bar.addWidget(self._presets_btn)
 
         bar.addWidget(QLabel("Format:"))
         self._format_combo = QComboBox()
@@ -297,6 +333,24 @@ class MainWindow(QMainWindow):
     def _on_filter_changed(self, text):
         self._proxy.set_filter(text)
         self._update_status()
+
+    def _on_scope_changed(self, idx):
+        self._proxy.set_scope(SCOPE_OPTIONS[idx])
+        self._update_status()
+
+    def _show_presets_menu(self):
+        menu = QMenu(self)
+        for label, text, scope in QUICK_FILTERS:
+            act = menu.addAction(label)
+            act.setData((text, scope))
+        chosen = menu.exec(self._presets_btn.mapToGlobal(
+            self._presets_btn.rect().bottomLeft()
+        ))
+        if chosen:
+            text, scope = chosen.data()
+            scope_idx = SCOPE_OPTIONS.index(scope)
+            self._scope_combo.setCurrentIndex(scope_idx)   # triggers _on_scope_changed
+            self._filter_edit.setText(text)                # triggers _on_filter_changed
 
     def _save_file(self):
         if not self._current_file:
