@@ -223,7 +223,7 @@ class MainWindow(QMainWindow):
 
         widths = self._config.get("column_widths", [])
         for i, w in enumerate(widths):
-            if i < self._source_model.columnCount():
+            if i < self._source_model.columnCount() and w > 0:
                 self._table.setColumnWidth(i, w)
 
         order = self._config.get("column_order", [])
@@ -242,7 +242,15 @@ class MainWindow(QMainWindow):
     def _save_table_state(self):
         header = self._table.horizontalHeader()
         col_count = self._source_model.columnCount()
-        self._config["column_widths"] = [self._table.columnWidth(i) for i in range(col_count)]
+        # Preserve previously-saved widths for hidden columns (they report 0 when hidden)
+        saved = self._config.get("column_widths", [0] * col_count)
+        while len(saved) < col_count:
+            saved.append(0)
+        widths = [
+            (saved[i] if self._table.isColumnHidden(i) else self._table.columnWidth(i))
+            for i in range(col_count)
+        ]
+        self._config["column_widths"] = widths
         self._config["column_order"] = [header.logicalIndex(i) for i in range(col_count)]
         self._config["sort_column"] = header.sortIndicatorSection()
         self._config["sort_order"] = header.sortIndicatorOrder().value
