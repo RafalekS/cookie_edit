@@ -16,3 +16,7 @@ Thumbs.db
 *.log
 logs/
 backup/
+.claude/
+
+# Runtime — defaults are in modules/utils.py DEFAULT_CONFIG
+config/config.json
