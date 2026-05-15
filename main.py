@@ -1,5 +1,6 @@
 import sys
 import os
+import ctypes
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -8,7 +9,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QKeySequence, QIcon
 
 from modules.cookie_model import CookieTableModel, CookieFilterProxyModel
 from modules.cookie_formats import detect_format, parse_file_as, save_file
@@ -470,11 +471,47 @@ class MainWindow(QMainWindow):
         self._schedule_config_save()
 
 
+def _set_taskbar_icon_windows(window, icon_path):
+    """On Windows, setWindowIcon() alone does not update the taskbar.
+    SendMessageW(WM_SETICON) with a handle from LoadImageW is required.
+    LoadImageW.restype must be c_void_p to prevent 32-bit handle truncation on 64-bit."""
+    try:
+        hwnd = int(window.winId())
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = ctypes.c_void_p
+        hicon = user32.LoadImageW(
+            None,
+            icon_path,
+            1,       # IMAGE_ICON
+            0, 0,
+            0x10 | 0x40,  # LR_LOADFROMFILE | LR_DEFAULTSIZE
+        )
+        if hicon:
+            WM_SETICON = 0x0080
+            ICON_SMALL, ICON_BIG = 0, 1
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
+    except Exception:
+        pass  # non-fatal: icon simply won't appear in taskbar
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Cookie Editor")
+
+    icon_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "config", "assets", "cookie_edit.png",
+    )
+    if os.path.isfile(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+
     window = MainWindow()
     window.show()
+
+    if sys.platform == "win32" and os.path.isfile(icon_path):
+        _set_taskbar_icon_windows(window, icon_path)
+
     sys.exit(app.exec())
 
 
