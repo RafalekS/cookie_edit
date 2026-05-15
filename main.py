@@ -263,9 +263,10 @@ class MainWindow(QMainWindow):
             visible = self._proxy.rowCount()
             total = len(self._source_model.all_cookies())
             shown = f"{visible}/{total}" if visible != total else str(total)
-            self._status_label.setText(
-                f"{self._current_file}   |   Format: {fmt_label}   |   {shown} cookies"
-            )
+            parts = [self._current_file, f"Format: {fmt_label}", f"{shown} cookies"]
+            if self._current_format == "header":
+                parts.append("Header format: only Name and Value are stored — Domain/Path/Expiry are not available in this format")
+            self._status_label.setText("   |   ".join(parts))
         else:
             total = len(self._source_model.all_cookies())
             if total:
@@ -311,6 +312,15 @@ class MainWindow(QMainWindow):
         self._current_format = fmt
         self._comments = data.get("comments", [])
         self._config["last_opened_file"] = path
+
+        # Always clear the filter on file open so no rows are hidden accidentally
+        self._filter_edit.blockSignals(True)
+        self._filter_edit.clear()
+        self._filter_edit.blockSignals(False)
+        self._scope_combo.blockSignals(True)
+        self._scope_combo.setCurrentIndex(0)
+        self._scope_combo.blockSignals(False)
+        self._proxy.set_filter("", scope=CookieFilterProxyModel.SCOPE_BOTH)
 
         self._source_model.load(data.get("cookies", []))
         self._populate_and_restore()
@@ -502,6 +512,20 @@ class MainWindow(QMainWindow):
 
     def _do_save(self, path, fmt):
         cookies = self._source_model.all_cookies()
+
+        # Warn about data loss when saving as header string
+        if fmt == "header" and self._current_format != "header":
+            r = QMessageBox.warning(
+                self, "Data Loss Warning",
+                "Header String format only stores cookie Name and Value.\n\n"
+                "Domain, Path, Expiry, Secure and Flag will NOT be saved.\n"
+                "If you open this file again, those columns will be empty.\n\n"
+                "Save as Header String anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if r != QMessageBox.StandardButton.Yes:
+                return
+
         errors = validate_cookies_for_format(cookies, fmt)
         if errors:
             msg = "Validation errors:\n\n" + "\n".join(errors[:20])
