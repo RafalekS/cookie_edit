@@ -1,3 +1,5 @@
+import sys
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QDialogButtonBox, QMessageBox, QPushButton,
@@ -6,12 +8,40 @@ from PyQt6.QtCore import Qt
 
 BROWSERS = ["Firefox", "Chrome", "Brave", "Edge"]
 
+CHROMIUM_BROWSERS = {"chrome", "brave", "edge"}
+
+_WIN_DPAPI_HELP = (
+    "Chromium-based browsers (Edge, Chrome, Brave) encrypt cookies on Windows "
+    "using DPAPI + AES-256-GCM.\n\n"
+    "Required packages are not installed. Run:\n\n"
+    "    pip install pywin32 pycryptodome\n\n"
+    "Then restart the application and try again."
+)
+
+
+def _check_win_crypto():
+    """Return an error string if Windows crypto deps are missing, else None."""
+    if sys.platform != "win32":
+        return None
+    missing = []
+    try:
+        import win32crypt  # noqa: F401
+    except ImportError:
+        missing.append("pywin32")
+    try:
+        from Crypto.Cipher import AES  # noqa: F401
+    except ImportError:
+        missing.append("pycryptodome")
+    if missing:
+        return f"Missing: {', '.join(missing)}\n\n" + _WIN_DPAPI_HELP
+    return None
+
 
 class BrowserImportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Import Cookies from Browser")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(460)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         self._cookies = []
 
@@ -23,6 +53,7 @@ class BrowserImportDialog(QDialog):
         row1.addWidget(QLabel("Browser:"))
         self._browser_combo = QComboBox()
         self._browser_combo.addItems(BROWSERS)
+        self._browser_combo.currentTextChanged.connect(self._on_browser_changed)
         row1.addWidget(self._browser_combo)
         form_layout.addLayout(row1)
 
@@ -48,17 +79,40 @@ class BrowserImportDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         layout.addWidget(btn_box)
 
+        # Show hint immediately if deps are missing for the default browser
+        self._on_browser_changed(self._browser_combo.currentText())
+
+    def _on_browser_changed(self, browser_text):
+        if browser_text.lower() in CHROMIUM_BROWSERS:
+            err = _check_win_crypto()
+            if err:
+                self._status_label.setText(
+                    "Note: pywin32 / pycryptodome required for this browser on Windows."
+                )
+                self._import_btn.setEnabled(False)
+                return
+        self._status_label.setText("")
+        self._import_btn.setEnabled(True)
+
     def _do_import(self):
         try:
             import browser_cookie3
         except ImportError:
-            QMessageBox.critical(self, "Missing Library", "browser-cookie3 is not installed.")
+            QMessageBox.critical(self, "Missing Library",
+                                 "browser-cookie3 is not installed.\n\nRun: pip install browser-cookie3")
             return
 
         browser = self._browser_combo.currentText().lower()
         domain = self._domain_edit.text().strip() or None
 
-        self._status_label.setText("Importing, please wait...")
+        # Pre-flight check for Windows crypto deps
+        if browser in CHROMIUM_BROWSERS:
+            err = _check_win_crypto()
+            if err:
+                QMessageBox.critical(self, "Missing Dependencies", err)
+                return
+
+        self._status_label.setText("Importing, please wait…")
         self._import_btn.setEnabled(False)
 
         try:
@@ -68,15 +122,8 @@ class BrowserImportDialog(QDialog):
                 "brave": browser_cookie3.brave,
                 "edge": browser_cookie3.edge,
             }
-            fn = func_map.get(browser)
-            if fn is None:
-                self._status_label.setText("Unknown browser.")
-                return
-
-            kwargs = {}
-            if domain:
-                kwargs["domain_name"] = domain
-
+            fn = func_map[browser]
+            kwargs = {"domain_name": domain} if domain else {}
             jar = fn(**kwargs)
 
             self._cookies = []
@@ -103,12 +150,16 @@ class BrowserImportDialog(QDialog):
 
         except PermissionError:
             self._status_label.setText(
-                "Permission denied — close the browser and try again, "
-                "or the profile database is locked."
+                "Permission denied — close the browser completely and try again."
             )
             self._import_btn.setEnabled(True)
         except Exception as e:
-            self._status_label.setText(f"Error: {e}")
+            msg = str(e)
+            if "key" in msg.lower() and "decrypt" in msg.lower():
+                detail = _WIN_DPAPI_HELP if sys.platform == "win32" else msg
+                QMessageBox.critical(self, "Decryption Error", detail)
+            else:
+                QMessageBox.critical(self, "Import Error", msg)
             self._import_btn.setEnabled(True)
 
     def get_cookies(self):

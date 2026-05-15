@@ -1,5 +1,5 @@
 PyQt6>=6.4.0
 browser-cookie3>=0.20.0
-# Windows only (for Chromium-based browser cookie decryption via DPAPI):
-# pywin32>=306
-# pycryptodome>=3.18.0
+# Windows — required for Chromium-based browser cookie decryption (DPAPI + AES-256-GCM):
+pywin32>=306; sys_platform == "win32"
+pycryptodome>=3.18.0; sys_platform == "win32"
