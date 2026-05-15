@@ -32,7 +32,7 @@ class DomainExportDialog(QDialog):
         self._sorted_domains = sorted(self._domain_map.keys(), key=str.lower)
 
         self._build_ui()
-        self._populate_list()
+        self._populate_list()   # called once — items are never recreated after this
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -94,15 +94,14 @@ class DomainExportDialog(QDialog):
         close_btn.clicked.connect(self.reject)
         layout.addWidget(btn_box)
 
-    def _populate_list(self, filter_text=""):
+    def _populate_list(self):
+        """Create all items once. Filter shows/hides them without resetting state."""
         self._list.blockSignals(True)
-        self._list.clear()
-        ft = filter_text.lower()
         for domain in self._sorted_domains:
-            if ft and ft not in domain.lower():
-                continue
             count = len(self._domain_map[domain])
-            item = QListWidgetItem(f"{domain or '(no domain)'}  —  {count} cookie{'s' if count != 1 else ''}")
+            item = QListWidgetItem(
+                f"{domain or '(no domain)'}  —  {count} cookie{'s' if count != 1 else ''}"
+            )
             item.setData(Qt.ItemDataRole.UserRole, domain)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked)
@@ -111,31 +110,45 @@ class DomainExportDialog(QDialog):
         self._update_sel_label()
 
     def _on_filter(self, text):
-        self._populate_list(filter_text=text)
+        """Show/hide items — never recreate them so checkbox state is preserved."""
+        ft = text.lower().strip()
+        self._list.blockSignals(True)
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            domain = item.data(Qt.ItemDataRole.UserRole) or ""
+            item.setHidden(bool(ft and ft not in domain.lower()))
+        self._list.blockSignals(False)
+        self._update_sel_label()
 
     def _on_item_changed(self, _item):
         self._update_sel_label()
 
     def _update_sel_label(self):
-        checked_domains = self._get_checked_domains()
+        # Count ALL checked items, including those hidden by the filter
+        checked_domains = self._get_checked_domains(visible_only=False)
         cookie_count = sum(len(self._domain_map[d]) for d in checked_domains)
         self._sel_label.setText(
             f"{len(checked_domains)} domain(s) selected  |  {cookie_count} cookies to export"
         )
         self._export_btn.setEnabled(len(checked_domains) > 0)
 
-    def _get_checked_domains(self):
+    def _get_checked_domains(self, visible_only=False):
         domains = []
         for i in range(self._list.count()):
             item = self._list.item(i)
+            if visible_only and item.isHidden():
+                continue
             if item.checkState() == Qt.CheckState.Checked:
                 domains.append(item.data(Qt.ItemDataRole.UserRole))
         return domains
 
     def _set_all(self, state):
+        """Apply state only to currently visible rows."""
         self._list.blockSignals(True)
         for i in range(self._list.count()):
-            self._list.item(i).setCheckState(state)
+            item = self._list.item(i)
+            if not item.isHidden():
+                item.setCheckState(state)
         self._list.blockSignals(False)
         self._update_sel_label()
 
@@ -146,14 +159,16 @@ class DomainExportDialog(QDialog):
         self._set_all(Qt.CheckState.Unchecked)
 
     def _invert(self):
+        """Invert only visible rows."""
         self._list.blockSignals(True)
         for i in range(self._list.count()):
             item = self._list.item(i)
-            item.setCheckState(
-                Qt.CheckState.Unchecked
-                if item.checkState() == Qt.CheckState.Checked
-                else Qt.CheckState.Checked
-            )
+            if not item.isHidden():
+                item.setCheckState(
+                    Qt.CheckState.Unchecked
+                    if item.checkState() == Qt.CheckState.Checked
+                    else Qt.CheckState.Checked
+                )
         self._list.blockSignals(False)
         self._update_sel_label()
 
