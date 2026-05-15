@@ -14,6 +14,7 @@ from modules.cookie_model import CookieTableModel, CookieFilterProxyModel
 from modules.cookie_formats import detect_format, parse_file_as, save_file
 from modules.edit_dialog import CookieEditDialog
 from modules.browser_import import BrowserImportDialog
+from modules.domain_export import DomainExportDialog
 from modules.utils import load_config, save_config, validate_cookies_for_format
 
 FORMAT_KEYS = ["netscape", "json", "header"]
@@ -104,6 +105,10 @@ class MainWindow(QMainWindow):
         im = mb.addMenu("Import")
         self._add_action(im, "From Browser…", self._import_from_browser)
 
+        # Export
+        ex = mb.addMenu("Export")
+        self._add_action(ex, "Export by Domain…", self._export_by_domain, QKeySequence("Ctrl+E"))
+
         # Toolbar
         tb = QToolBar("Main")
         self.addToolBar(tb)
@@ -117,6 +122,8 @@ class MainWindow(QMainWindow):
             ("Delete", self._delete_selected),
             (None, None),
             ("Import Browser", self._import_from_browser),
+            (None, None),
+            ("Export by Domain", self._export_by_domain),
         ]:
             if label is None:
                 tb.addSeparator()
@@ -427,6 +434,17 @@ class MainWindow(QMainWindow):
 
         self._set_unsaved(True)
         self._update_status()
+
+    # -------------------------------------------------- Domain export --
+
+    def _export_by_domain(self):
+        cookies = self._source_model.all_cookies()
+        if not cookies:
+            QMessageBox.information(self, "No Data", "No cookies loaded to export.")
+            return
+        default = self._config.get("default_directory") or os.path.expanduser("~")
+        dlg = DomainExportDialog(cookies, default_directory=default, parent=self)
+        dlg.exec()
 
     # -------------------------------------------------------------- Close --
 
