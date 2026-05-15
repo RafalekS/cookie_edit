@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QToolBar, QStatusBar, QFileDialog, QMessageBox,
     QLineEdit, QLabel, QComboBox, QDialog, QHeaderView,
-    QAbstractItemView, QPushButton, QMenu,
+    QAbstractItemView, QPushButton, QMenu, QInputDialog, QListWidget,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -340,17 +340,103 @@ class MainWindow(QMainWindow):
 
     def _show_presets_menu(self):
         menu = QMenu(self)
+
+        # Built-in presets
         for label, text, scope in QUICK_FILTERS:
             act = menu.addAction(label)
-            act.setData((text, scope))
+            act.setData(("apply", text, scope))
+
+        # Saved filters
+        saved = self._config.get("saved_filters", [])
+        if saved:
+            menu.addSeparator()
+            for f in saved:
+                scope_label = {"both": "Domain+Name", "domain": "Domain", "name": "Name"}.get(
+                    f["scope"], f["scope"]
+                )
+                act = menu.addAction(f"★  {f['name']}  [{scope_label}]")
+                act.setData(("apply", f["text"], f["scope"]))
+
+        menu.addSeparator()
+        menu.addAction("Save current filter…").setData(("save", None, None))
+        if saved:
+            menu.addAction("Manage saved filters…").setData(("manage", None, None))
+
         chosen = menu.exec(self._presets_btn.mapToGlobal(
             self._presets_btn.rect().bottomLeft()
         ))
-        if chosen:
-            text, scope = chosen.data()
-            scope_idx = SCOPE_OPTIONS.index(scope)
-            self._scope_combo.setCurrentIndex(scope_idx)   # triggers _on_scope_changed
-            self._filter_edit.setText(text)                # triggers _on_filter_changed
+        if not chosen:
+            return
+
+        action, text, scope = chosen.data()
+        if action == "apply":
+            self._scope_combo.setCurrentIndex(SCOPE_OPTIONS.index(scope))
+            self._filter_edit.setText(text)
+        elif action == "save":
+            self._save_current_filter()
+        elif action == "manage":
+            self._manage_saved_filters()
+
+    def _save_current_filter(self):
+        text = self._filter_edit.text().strip()
+        if not text:
+            QMessageBox.information(self, "Save Filter", "No filter is currently active.")
+            return
+        name, ok = QInputDialog.getText(self, "Save Filter", "Name for this filter:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        scope = SCOPE_OPTIONS[self._scope_combo.currentIndex()]
+        saved = self._config.get("saved_filters", [])
+        for f in saved:
+            if f["name"] == name:
+                f["text"] = text
+                f["scope"] = scope
+                self._persist_config()
+                return
+        saved.append({"name": name, "text": text, "scope": scope})
+        self._config["saved_filters"] = saved
+        self._persist_config()
+
+    def _manage_saved_filters(self):
+        saved = self._config.get("saved_filters", [])
+        if not saved:
+            QMessageBox.information(self, "Saved Filters", "No saved filters yet.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Manage Saved Filters")
+        dlg.setMinimumSize(480, 300)
+        layout = QVBoxLayout(dlg)
+
+        lst = QListWidget()
+        for f in saved:
+            scope_label = {"both": "Domain+Name", "domain": "Domain", "name": "Name"}.get(
+                f["scope"], f["scope"]
+            )
+            lst.addItem(f"{f['name']}  [{scope_label}]  —  {f['text'][:70]}")
+        layout.addWidget(lst)
+
+        btn_row = QHBoxLayout()
+        del_btn = QPushButton("Delete selected")
+        close_btn = QPushButton("Close")
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        def _delete():
+            row = lst.currentRow()
+            if row < 0:
+                return
+            saved.pop(row)
+            self._config["saved_filters"] = saved
+            self._persist_config()
+            lst.takeItem(row)
+
+        del_btn.clicked.connect(_delete)
+        close_btn.clicked.connect(dlg.accept)
+        dlg.exec()
 
     def _save_file(self):
         if not self._current_file:
@@ -493,12 +579,26 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- Domain export --
 
     def _export_by_domain(self):
-        cookies = self._source_model.all_cookies()
-        if not cookies:
+        all_cookies = self._source_model.all_cookies()
+        if not all_cookies:
             QMessageBox.information(self, "No Data", "No cookies loaded to export.")
             return
+
+        # Pre-select only the domains visible under the current filter
+        visible = self._proxy.rowCount()
+        if 0 < visible < len(all_cookies):
+            preselected = set()
+            for i in range(visible):
+                src = self._proxy.mapToSource(self._proxy.index(i, 0))
+                preselected.add(all_cookies[src.row()].get("domain", ""))
+        else:
+            preselected = None  # no filter active → check all
+
         default = self._config.get("default_directory") or os.path.expanduser("~")
-        dlg = DomainExportDialog(cookies, default_directory=default, parent=self)
+        dlg = DomainExportDialog(
+            all_cookies, default_directory=default,
+            preselected_domains=preselected, parent=self,
+        )
         dlg.exec()
 
     # -------------------------------------------------------------- Close --

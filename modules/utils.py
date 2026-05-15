@@ -9,6 +9,7 @@ DEFAULT_CONFIG = {
     "column_order": [],
     "sort_column": -1,
     "sort_order": 0,
+    "saved_filters": [],
 }
 
 

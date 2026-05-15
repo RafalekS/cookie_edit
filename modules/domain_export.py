@@ -16,14 +16,19 @@ FORMAT_EXTS = {"netscape": "*.txt", "json": "*.json", "header": "*.txt"}
 
 
 class DomainExportDialog(QDialog):
-    def __init__(self, cookies, default_directory="", parent=None):
+    def __init__(self, cookies, default_directory="", preselected_domains=None, parent=None):
+        """
+        preselected_domains: set of domain strings to pre-check.
+                             None means check all (default behaviour).
+        """
         super().__init__(parent)
         self.setWindowTitle("Export Cookies by Domain")
-        self.setMinimumSize(480, 560)
+        self.setMinimumSize(480, 580)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
         self._cookies = cookies
         self._default_directory = default_directory
+        self._preselected_domains = preselected_domains  # None → check all
 
         # Build domain → cookies mapping (sorted)
         self._domain_map = defaultdict(list)
@@ -42,6 +47,17 @@ class DomainExportDialog(QDialog):
         total_cookies = len(self._cookies)
         self._summary = QLabel(f"{total_domains} domains  |  {total_cookies} cookies total")
         layout.addWidget(self._summary)
+
+        # Filter-origin notice
+        if self._preselected_domains is not None:
+            n = len(self._preselected_domains)
+            notice = QLabel(
+                f"⚑  Pre-selected {n} domain(s) from the active main-window filter. "
+                "Unchecked domains are still shown — tick them to include."
+            )
+            notice.setWordWrap(True)
+            notice.setStyleSheet("color: #0057b8; font-style: italic;")
+            layout.addWidget(notice)
 
         # Domain filter
         filter_row = QHBoxLayout()
@@ -104,7 +120,12 @@ class DomainExportDialog(QDialog):
             )
             item.setData(Qt.ItemDataRole.UserRole, domain)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
+            if self._preselected_domains is None:
+                checked = Qt.CheckState.Checked
+            else:
+                checked = (Qt.CheckState.Checked if domain in self._preselected_domains
+                           else Qt.CheckState.Unchecked)
+            item.setCheckState(checked)
             self._list.addItem(item)
         self._list.blockSignals(False)
         self._update_sel_label()
