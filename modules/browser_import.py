@@ -7,18 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 BROWSERS = ["Firefox", "Chrome", "Brave", "Edge"]
-
-_WIN_DPAPI_HELP = (
-    "Chromium-based browsers (Edge, Chrome, Brave) encrypt cookies on Windows "
-    "using DPAPI + AES-256-GCM.\n\n"
-    "Install the required packages and restart the application:\n\n"
-    "    pip install pywin32 pycryptodome"
-)
-
-
-def _is_dpapi_error(exc):
-    msg = str(exc).lower()
-    return "key" in msg and "decrypt" in msg
+CHROMIUM_BROWSERS = {"chrome", "brave", "edge"}
 
 
 class BrowserImportDialog(QDialog):
@@ -59,13 +48,6 @@ class BrowserImportDialog(QDialog):
         layout.addWidget(btn_box)
 
     def _do_import(self):
-        try:
-            import browser_cookie3
-        except ImportError:
-            QMessageBox.critical(self, "Missing Library",
-                                 "browser-cookie3 is not installed.\n\nRun: pip install browser-cookie3")
-            return
-
         browser = self._browser_combo.currentText().lower()
         domain = self._domain_edit.text().strip() or None
 
@@ -73,49 +55,73 @@ class BrowserImportDialog(QDialog):
         self._import_btn.setEnabled(False)
 
         try:
-            func_map = {
-                "firefox": browser_cookie3.firefox,
-                "chrome": browser_cookie3.chrome,
-                "brave": browser_cookie3.brave,
-                "edge": browser_cookie3.edge,
-            }
-            fn = func_map[browser]
-            kwargs = {"domain_name": domain} if domain else {}
-            jar = fn(**kwargs)
-
-            self._cookies = []
-            for c in jar:
-                expiry = str(int(c.expires)) if c.expires else "0"
-                self._cookies.append({
-                    "domain": c.domain or "",
-                    "flag": "TRUE" if getattr(c, "domain_specified", False) else "FALSE",
-                    "path": c.path or "/",
-                    "secure": "TRUE" if c.secure else "FALSE",
-                    "expiry": expiry,
-                    "name": c.name or "",
-                    "value": c.value or "",
-                })
-
-            count = len(self._cookies)
-            if count == 0:
-                self._status_label.setText("No cookies found. Check the browser or domain filter.")
-                self._import_btn.setEnabled(True)
-                return
-
-            self._status_label.setText(f"Found {count} cookies.")
-            self.accept()
-
-        except PermissionError:
-            self._status_label.setText(
-                "Permission denied — close the browser completely and try again."
-            )
-            self._import_btn.setEnabled(True)
-        except Exception as e:
-            if sys.platform == "win32" and _is_dpapi_error(e):
-                QMessageBox.critical(self, "Decryption Error", _WIN_DPAPI_HELP)
+            if sys.platform == "win32" and browser in CHROMIUM_BROWSERS:
+                cookies = self._import_win_chromium(browser, domain)
             else:
-                QMessageBox.critical(self, "Import Error", str(e))
+                cookies = self._import_via_browser_cookie3(browser, domain)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", str(e))
+            self._status_label.setText("")
             self._import_btn.setEnabled(True)
+            return
+
+        if not cookies:
+            self._status_label.setText("No cookies found. Check the browser or domain filter.")
+            self._import_btn.setEnabled(True)
+            return
+
+        self._cookies = cookies
+        self._status_label.setText(f"Found {len(cookies)} cookies.")
+        self.accept()
+
+    def _import_win_chromium(self, browser, domain):
+        """Direct SQLite + DPAPI + AES-GCM extraction — no browser_cookie3."""
+        try:
+            import win32crypt  # noqa: F401 — check early for clear error
+        except ImportError:
+            raise ImportError(
+                "pywin32 is required for Chromium browser import on Windows.\n\n"
+                "Run:  pip install pywin32"
+            )
+
+        from modules.win_cookies import extract
+        return extract(browser, domain_filter=domain)
+
+    def _import_via_browser_cookie3(self, browser, domain):
+        """Use browser_cookie3 — for Firefox on any platform, or Chromium on Linux/Mac."""
+        try:
+            import browser_cookie3
+        except ImportError:
+            raise ImportError(
+                "browser-cookie3 is not installed.\n\nRun:  pip install browser-cookie3"
+            )
+
+        func_map = {
+            "firefox": browser_cookie3.firefox,
+            "chrome":  browser_cookie3.chrome,
+            "brave":   browser_cookie3.brave,
+            "edge":    browser_cookie3.edge,
+        }
+        fn = func_map.get(browser)
+        if fn is None:
+            raise ValueError(f"Unknown browser: {browser!r}")
+
+        kwargs = {"domain_name": domain} if domain else {}
+        jar = fn(**kwargs)
+
+        cookies = []
+        for c in jar:
+            expiry = str(int(c.expires)) if c.expires else "0"
+            cookies.append({
+                "domain": c.domain or "",
+                "flag": "TRUE" if getattr(c, "domain_specified", False) else "FALSE",
+                "path": c.path or "/",
+                "secure": "TRUE" if c.secure else "FALSE",
+                "expiry": expiry,
+                "name": c.name or "",
+                "value": c.value or "",
+            })
+        return cookies
 
     def get_cookies(self):
         return self._cookies
