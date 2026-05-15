@@ -1,0 +1,5 @@
+PyQt6>=6.4.0
+browser-cookie3>=0.20.0
+# Windows only (for Chromium-based browser cookie decryption via DPAPI):
+# pywin32>=306
+# pycryptodome>=3.18.0
