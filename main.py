@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QToolBar, QStatusBar, QFileDialog, QMessageBox,
     QLineEdit, QLabel, QComboBox, QDialog, QHeaderView,
-    QAbstractItemView, QPushButton, QMenu, QListWidget,
+    QAbstractItemView, QPushButton, QMenu, QListWidget, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -128,6 +128,7 @@ class MainWindow(QMainWindow):
 
         # File
         fm = mb.addMenu("File")
+        self._add_action(fm, "New…", self._new_file, QKeySequence.StandardKey.New)
         self._add_action(fm, "Open…", self._open_file, QKeySequence.StandardKey.Open)
         self._add_action(fm, "Append from File…", self._append_from_file, QKeySequence("Ctrl+Shift+A"))
         self._add_action(fm, "Save", self._save_file, QKeySequence.StandardKey.Save)
@@ -154,6 +155,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(tb)
         tb.setMovable(False)
         for label, fn in [
+            ("New", self._new_file),
             ("Open", self._open_file),
             ("Append", self._append_from_file),
             ("Save", self._save_file),
@@ -308,6 +310,53 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
         )
         return r == QMessageBox.StandardButton.Discard
+
+    def _new_file(self):
+        if not self._confirm_discard():
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("New Cookie File")
+        dlg.setFixedSize(320, 130)
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel("Choose format for the new file:"))
+        combo = QComboBox()
+        combo.addItems(FORMAT_LABELS)
+        layout.addWidget(combo)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        fmt = FORMAT_KEYS[combo.currentIndex()]
+        self._current_file = None
+        self._current_format = fmt
+        self._comments = []
+
+        self._filter_edit.blockSignals(True)
+        self._filter_edit.clear()
+        self._filter_edit.blockSignals(False)
+        self._scope_combo.blockSignals(True)
+        self._scope_combo.setCurrentIndex(0)
+        self._scope_combo.blockSignals(False)
+        self._proxy.set_filter("", scope=CookieFilterProxyModel.SCOPE_BOTH)
+
+        self._source_model.load([])
+        self._apply_column_visibility(fmt)
+        self._populate_and_restore()
+
+        self._format_combo.blockSignals(True)
+        self._format_combo.setCurrentIndex(FORMAT_KEYS.index(fmt))
+        self._format_combo.setEnabled(True)
+        self._format_combo.blockSignals(False)
+
+        self._set_unsaved(False)
+        self._update_title()
+        self._update_status()
 
     def _open_file(self):
         if not self._confirm_discard():
