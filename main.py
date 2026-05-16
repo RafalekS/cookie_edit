@@ -16,6 +16,7 @@ from modules.cookie_formats import detect_format, parse_file_as, save_file
 from modules.edit_dialog import CookieEditDialog
 from modules.browser_import import BrowserImportDialog
 from modules.domain_export import DomainExportDialog
+from modules.append_dialog import DomainImportDialog
 from modules.filter_dialog import FilterEditDialog, SCOPE_KEYS as FILTER_SCOPE_KEYS
 from modules.utils import load_config, save_config, validate_cookies_for_format
 
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         # File
         fm = mb.addMenu("File")
         self._add_action(fm, "Open…", self._open_file, QKeySequence.StandardKey.Open)
+        self._add_action(fm, "Append from File…", self._append_from_file, QKeySequence("Ctrl+Shift+A"))
         self._add_action(fm, "Save", self._save_file, QKeySequence.StandardKey.Save)
         self._add_action(fm, "Save As…", self._save_as, QKeySequence("Ctrl+Shift+S"))
         fm.addSeparator()
@@ -153,6 +155,7 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         for label, fn in [
             ("Open", self._open_file),
+            ("Append", self._append_from_file),
             ("Save", self._save_file),
             (None, None),
             ("Add", self._add_cookie),
@@ -350,6 +353,42 @@ class MainWindow(QMainWindow):
         self._set_unsaved(False)
         self._update_status()
         self._persist_config()
+
+    def _append_from_file(self):
+        default = self._config.get("default_directory") or os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(self, "Append Cookies from File", default, OPEN_FILTER)
+        if not path:
+            return
+
+        try:
+            fmt = detect_format(path)
+            data = parse_file_as(path, fmt)
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Could not read file:\n{e}")
+            return
+
+        source_cookies = data.get("cookies", [])
+        if not source_cookies:
+            QMessageBox.information(self, "Empty File", "No cookies found in the selected file.")
+            return
+
+        dlg = DomainImportDialog(source_cookies, path, fmt, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        to_append = dlg.get_selected_cookies()
+        if not to_append:
+            return
+
+        for cookie in to_append:
+            self._source_model.add_cookie(cookie)
+
+        self._set_unsaved(True)
+        self._update_status()
+        QMessageBox.information(
+            self, "Appended",
+            f"Appended {len(to_append)} cookie(s) from {len(set(c.get('domain','') for c in to_append))} domain(s).",
+        )
 
     def _on_format_changed(self, idx):
         new_fmt = FORMAT_KEYS[idx]
