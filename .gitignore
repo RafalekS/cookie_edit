@@ -18,5 +18,6 @@ logs/
 backup/
 .claude/
 
-# Runtime — defaults are in modules/utils.py DEFAULT_CONFIG
+# Runtime state and user data — never tracked
 config/config.json
+config/saved_filters.json

@@ -18,7 +18,8 @@ from modules.browser_import import BrowserImportDialog
 from modules.domain_export import DomainExportDialog
 from modules.append_dialog import DomainImportDialog
 from modules.filter_dialog import FilterEditDialog, SCOPE_KEYS as FILTER_SCOPE_KEYS
-from modules.utils import load_config, save_config, validate_cookies_for_format
+from modules.utils import (load_config, save_config, validate_cookies_for_format,
+                           load_saved_filters, save_saved_filters)
 
 FORMAT_KEYS = ["netscape", "json", "header"]
 FORMAT_LABELS = ["Netscape / cookies.txt", "JSON (Cookie-Editor)", "Header String"]
@@ -463,7 +464,7 @@ class MainWindow(QMainWindow):
             act.setData(("apply", text, scope))
 
         # Saved filters
-        saved = self._config.get("saved_filters", [])
+        saved = load_saved_filters()
         if saved:
             menu.addSeparator()
             for f in saved:
@@ -497,19 +498,18 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         f = dlg.get_filter()
-        saved = self._config.get("saved_filters", [])
+        saved = load_saved_filters()
         for existing in saved:
             if existing["name"] == f["name"]:
                 existing["text"] = f["text"]
                 existing["scope"] = f["scope"]
-                self._persist_config()
+                save_saved_filters(saved)
                 return
         saved.append(f)
-        self._config["saved_filters"] = saved
-        self._persist_config()
+        save_saved_filters(saved)
 
     def _manage_saved_filters(self):
-        saved = self._config.get("saved_filters", [])
+        saved = load_saved_filters()
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Manage Saved Filters")
@@ -549,12 +549,11 @@ class MainWindow(QMainWindow):
                 if existing["name"] == f["name"]:
                     existing.update(f)
                     _refresh_list()
-                    self._persist_config()
+                    save_saved_filters(saved)
                     return
             saved.append(f)
-            self._config["saved_filters"] = saved
             _refresh_list()
-            self._persist_config()
+            save_saved_filters(saved)
 
         def _edit():
             row = lst.currentRow()
@@ -564,18 +563,16 @@ class MainWindow(QMainWindow):
             if d.exec() != QDialog.DialogCode.Accepted:
                 return
             saved[row] = d.get_filter()
-            self._config["saved_filters"] = saved
             _refresh_list()
-            self._persist_config()
+            save_saved_filters(saved)
 
         def _delete():
             row = lst.currentRow()
             if row < 0:
                 return
             saved.pop(row)
-            self._config["saved_filters"] = saved
             _refresh_list()
-            self._persist_config()
+            save_saved_filters(saved)
 
         new_btn.clicked.connect(_new)
         edit_btn.clicked.connect(_edit)

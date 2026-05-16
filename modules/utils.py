@@ -9,13 +9,19 @@ DEFAULT_CONFIG = {
     "column_order": [],
     "sort_column": -1,
     "sort_order": 0,
-    "saved_filters": [],
 }
 
 
+def _config_dir():
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
+
+
 def get_config_path():
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "config", "config.json")
+    return os.path.join(_config_dir(), "config.json")
+
+
+def get_filters_path():
+    return os.path.join(_config_dir(), "saved_filters.json")
 
 
 def load_config():
@@ -37,6 +43,26 @@ def save_config(config):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+
+
+def load_saved_filters():
+    path = get_filters_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+def save_saved_filters(filters):
+    path = get_filters_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(filters, f, indent=2)
 
 
 def validate_netscape_cookie(cookie):
