@@ -3,7 +3,7 @@ from collections import defaultdict
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QDialogButtonBox, QPushButton,
-    QComboBox, QFileDialog, QMessageBox,
+    QComboBox, QFileDialog, QMessageBox, QApplication,
 )
 from PyQt6.QtCore import Qt
 
@@ -23,8 +23,10 @@ class DomainExportDialog(QDialog):
         """
         super().__init__(parent)
         self.setWindowTitle("Export Cookies by Domain")
-        self.setMinimumSize(480, 580)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        screen_h = QApplication.primaryScreen().availableGeometry().height()
+        self.setMinimumSize(480, min(580, screen_h - 80))
+        self.setMaximumHeight(screen_h - 80)
 
         self._cookies = cookies
         self._default_directory = default_directory

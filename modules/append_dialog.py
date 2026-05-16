@@ -2,7 +2,7 @@ from collections import defaultdict
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QDialogButtonBox, QPushButton,
+    QListWidget, QListWidgetItem, QDialogButtonBox, QPushButton, QApplication,
 )
 from PyQt6.QtCore import Qt
 
@@ -13,8 +13,10 @@ class DomainImportDialog(QDialog):
     def __init__(self, cookies, source_path, source_fmt, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Append from File — Select Domains")
-        self.setMinimumSize(480, 520)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        screen_h = QApplication.primaryScreen().availableGeometry().height()
+        self.setMinimumSize(480, min(520, screen_h - 80))
+        self.setMaximumHeight(screen_h - 80)
 
         self._cookies = cookies
         self._domain_map = defaultdict(list)
