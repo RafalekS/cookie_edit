@@ -13,6 +13,7 @@ DEFAULT_WORKFLOW_CONFIG = {
     "filtered_cookies_path": "",
     "filter_name": "",
     "post_save_commands": [],
+    "fallback_commands": [],
 }
 
 
@@ -74,9 +75,7 @@ class WorkflowConfigDialog(QDialog):
 
         # Post-save commands
         layout.addWidget(QLabel(
-            "Post-save commands — one per line:\n"
-            "  {all_path} = all cookies file path\n"
-            "  {filtered_path} = filtered cookies file path"
+            "Post-save commands — one per line  ({all_path} and {filtered_path} are substituted):"
         ))
         self._commands = QPlainTextEdit()
         self._commands.setPlaceholderText(
@@ -85,8 +84,21 @@ class WorkflowConfigDialog(QDialog):
             'curl -X POST http://192.168.0.166:7799/cookies/sync-stash -H "X-API-Key: changeme"'
         )
         self._commands.setPlainText("\n".join(wf_config.get("post_save_commands", [])))
-        self._commands.setMinimumHeight(100)
+        self._commands.setMinimumHeight(80)
         layout.addWidget(self._commands)
+
+        # Fallback commands
+        layout.addWidget(QLabel(
+            "Fallback commands — run if any post-save command fails:"
+        ))
+        self._fallback = QPlainTextEdit()
+        self._fallback.setPlaceholderText(
+            "copy {filtered_path} V:\\stash\\config\\cookies.txt\n"
+            "copy {filtered_path} H:\\mediasuite\\config\\cookies\\cookies.txt"
+        )
+        self._fallback.setPlainText("\n".join(wf_config.get("fallback_commands", [])))
+        self._fallback.setMinimumHeight(80)
+        layout.addWidget(self._fallback)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -104,12 +116,13 @@ class WorkflowConfigDialog(QDialog):
             line_edit.setText(path)
 
     def get_config(self):
-        raw_cmds = self._commands.toPlainText()
-        commands = [l.strip() for l in raw_cmds.splitlines() if l.strip()]
+        def _lines(widget):
+            return [l.strip() for l in widget.toPlainText().splitlines() if l.strip()]
         return {
-            "browser":              BROWSER_KEYS[self._browser.currentIndex()],
-            "all_cookies_path":     self._all_path.text().strip(),
+            "browser":               BROWSER_KEYS[self._browser.currentIndex()],
+            "all_cookies_path":      self._all_path.text().strip(),
             "filtered_cookies_path": self._filt_path.text().strip(),
-            "filter_name":          self._filter_combo.currentText(),
-            "post_save_commands":   commands,
+            "filter_name":           self._filter_combo.currentText(),
+            "post_save_commands":    _lines(self._commands),
+            "fallback_commands":     _lines(self._fallback),
         }

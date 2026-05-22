@@ -792,6 +792,7 @@ class MainWindow(QMainWindow):
         filter_name   = wf.get("filter_name", "").strip()
         browser       = wf.get("browser", "brave")
         commands      = wf.get("post_save_commands", [])
+        fallbacks     = wf.get("fallback_commands", [])
 
         if not all_path or not filt_path or not filter_name:
             QMessageBox.warning(
@@ -910,10 +911,12 @@ class MainWindow(QMainWindow):
             append(f"  OK")
 
             # Step 5 — Post-save commands
-            if commands:
-                append(f"[5/5] Running {len(commands)} post-save command(s)…")
-                creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                for i, cmd_template in enumerate(commands, 1):
+            creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+            def _run_commands(cmd_list, label):
+                """Run a list of commands, return True if all succeeded."""
+                all_ok = True
+                for i, cmd_template in enumerate(cmd_list, 1):
                     cmd = cmd_template.replace("{all_path}", all_path).replace("{filtered_path}", filt_path)
                     append(f"  [{i}] {cmd}")
                     try:
@@ -925,21 +928,36 @@ class MainWindow(QMainWindow):
                             for line in result.stdout.strip().splitlines():
                                 append(f"      {line}")
                         if result.returncode != 0:
-                            append(f"  ERROR (exit {result.returncode})")
+                            append(f"      ERROR (exit {result.returncode})")
                             if result.stderr.strip():
                                 for line in result.stderr.strip().splitlines():
                                     append(f"      {line}")
-                            errors.append(cmd)
+                            all_ok = False
                         else:
-                            append(f"      exit 0 — OK")
+                            append(f"      OK")
                     except Exception as e:
-                        append(f"  ERROR: {e}")
-                        errors.append(cmd)
+                        append(f"      ERROR: {e}")
+                        all_ok = False
+                return all_ok
+
+            if commands:
+                append(f"[5/5] Running {len(commands)} post-save command(s)…")
+                primary_ok = _run_commands(commands, "primary")
+                if not primary_ok and fallbacks:
+                    append(f"\n  Primary commands had errors — running {len(fallbacks)} fallback command(s)…")
+                    fallback_ok = _run_commands(fallbacks, "fallback")
+                    if fallback_ok:
+                        append("  Fallback completed successfully.")
+                    else:
+                        append("  Fallback also failed.")
+                        errors.append("fallback")
+                elif not primary_ok:
+                    errors.append("primary")
             else:
                 append("[5/5] No post-save commands configured — skipping")
 
             if errors:
-                append(f"\nWorkflow finished with {len(errors)} command error(s).")
+                append(f"\nWorkflow finished with errors.")
             else:
                 append("\nWorkflow complete.")
             run_btn.setEnabled(True)
