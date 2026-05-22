@@ -5,11 +5,62 @@ Requires: pywin32 (win32crypt), pycryptodome or pycryptodomex (AES-GCM).
 """
 
 import base64
+import ctypes
+import ctypes.wintypes as wt
 import json
 import os
 import shutil
 import sqlite3
 import tempfile
+
+def _copy_file_shared(src, dst):
+    """Copy a file using CreateFile with FILE_SHARE_READ|WRITE|DELETE.
+
+    shutil.copy2 fails if the file is held open by another process (e.g. a
+    running browser). Using the Windows API with full sharing flags lets us
+    read and copy the file regardless.
+    """
+    k32 = ctypes.windll.kernel32
+    k32.CreateFileW.restype = ctypes.c_void_p
+
+    GENERIC_READ   = 0x80000000
+    FILE_SHARE_ALL = 0x00000007   # READ | WRITE | DELETE
+    OPEN_EXISTING  = 3
+
+    handle = k32.CreateFileW(
+        ctypes.c_wchar_p(src),
+        GENERIC_READ,
+        FILE_SHARE_ALL,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    INVALID_HANDLE = ctypes.c_void_p(-1).value
+    if handle is None or handle == INVALID_HANDLE:
+        err = k32.GetLastError()
+        raise PermissionError(
+            f"Cannot read cookies file (Windows error {err}).\n"
+            "The browser may be holding an exclusive lock — try closing it."
+        )
+
+    try:
+        high = wt.DWORD(0)
+        low  = k32.GetFileSize(ctypes.c_void_p(handle), ctypes.byref(high))
+        size = (high.value << 32) | low
+        if size:
+            buf  = (ctypes.c_char * size)()
+            read = wt.DWORD(0)
+            k32.ReadFile(ctypes.c_void_p(handle), buf, size, ctypes.byref(read), None)
+            data = bytes(buf)[: read.value]
+        else:
+            data = b""
+    finally:
+        k32.CloseHandle(ctypes.c_void_p(handle))
+
+    with open(dst, "wb") as f:
+        f.write(data)
+
 
 BROWSER_PATHS = {
     "edge":   r"Microsoft\Edge\User Data",
@@ -128,23 +179,21 @@ def extract(browser, domain_filter=None):
             "Try closing the browser and retrying."
         )
 
-    # Copy the DB and any WAL/SHM files to a temp dir for a consistent read.
+    # Copy the DB and WAL/SHM files to a temp dir for a consistent read.
     # Chromium uses WAL mode — recent cookies may only be in the -wal file.
-    # A PermissionError here means the browser is running with an exclusive lock.
+    # We use _copy_file_shared (CreateFile with FILE_SHARE_ALL) so the copy
+    # works even while the browser is running with the file open.
     tmp_dir = tempfile.mkdtemp()
     try:
         tmp_db = os.path.join(tmp_dir, "cookies.db")
-        try:
-            shutil.copy2(db_path, tmp_db)
-            for ext in ("-wal", "-shm"):
-                src = db_path + ext
-                if os.path.exists(src):
-                    shutil.copy2(src, tmp_db + ext)
-        except PermissionError:
-            raise PermissionError(
-                f"{browser.title()} is running and has locked the cookies file.\n\n"
-                "Close the browser and try again."
-            )
+        _copy_file_shared(db_path, tmp_db)
+        for ext in ("-wal", "-shm"):
+            src = db_path + ext
+            if os.path.exists(src):
+                try:
+                    _copy_file_shared(src, tmp_db + ext)
+                except PermissionError:
+                    pass  # WAL/SHM missing or locked — SQLite will cope
         return _read_db(tmp_db, master_key, domain_filter)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
