@@ -24,6 +24,11 @@ from modules.utils import (load_config, save_config, validate_cookies_for_format
                            load_saved_filters, save_saved_filters)
 from modules.workflow import WorkflowConfigDialog, DEFAULT_WORKFLOW_CONFIG
 from modules.browser_import import import_browser_cookies
+if sys.platform == "win32":
+    from modules.win_cookies import BrowserLockedError, close_browser
+else:
+    class BrowserLockedError(Exception): pass
+    def close_browser(browser): pass
 
 FORMAT_KEYS = ["netscape", "json", "header"]
 FORMAT_LABELS = ["Netscape / cookies.txt", "JSON (Cookie-Editor)", "Header String"]
@@ -834,6 +839,17 @@ class MainWindow(QMainWindow):
             append(f"[1/5] Importing all cookies from {browser}…")
             try:
                 cookies = import_browser_cookies(browser)
+            except BrowserLockedError:
+                append(f"  {browser.title()} has the file locked — closing it…")
+                QApplication.processEvents()
+                close_browser(browser)
+                append(f"  {browser.title()} closed — retrying import…")
+                try:
+                    cookies = import_browser_cookies(browser)
+                except Exception as e:
+                    append(f"  ERROR: {e}")
+                    run_btn.setEnabled(True)
+                    return
             except Exception as e:
                 append(f"  ERROR: {e}")
                 run_btn.setEnabled(True)

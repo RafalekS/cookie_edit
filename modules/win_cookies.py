@@ -11,38 +11,76 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import tempfile
+import time
+
+
+class BrowserLockedError(PermissionError):
+    """The browser holds an exclusive lock on the cookies DB (Windows error 32).
+    The only reliable fix is to close the browser first."""
+    def __init__(self, browser):
+        self.browser = browser
+        super().__init__(
+            f"{browser.title()} has the cookies file exclusively locked.\n\n"
+            "Windows error 32 (ERROR_SHARING_VIOLATION) — the browser opened the\n"
+            "file without allowing any other process to read it."
+        )
+
+
+_BROWSER_EXE = {
+    "brave":  "brave.exe",
+    "chrome": "chrome.exe",
+    "edge":   "msedge.exe",
+}
+
+_NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
+
+
+def close_browser(browser):
+    """Gracefully close a Chromium browser; force-kill if it won't quit in 8 s.
+    Returns when the process is gone."""
+    exe = _BROWSER_EXE.get(browser.lower(), f"{browser}.exe")
+    subprocess.run(["taskkill", "/im", exe], capture_output=True, creationflags=_NO_WINDOW)
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        r = subprocess.run(
+            ["tasklist", "/fi", f"imagename eq {exe}"],
+            capture_output=True, text=True, creationflags=_NO_WINDOW,
+        )
+        if exe.lower() not in r.stdout.lower():
+            return
+        time.sleep(0.5)
+    subprocess.run(["taskkill", "/f", "/im", exe], capture_output=True, creationflags=_NO_WINDOW)
+    time.sleep(1)
+
 
 def _copy_file_shared(src, dst):
-    """Copy a file using CreateFile with FILE_SHARE_READ|WRITE|DELETE.
+    """Copy src → dst using CreateFile(FILE_SHARE_READ|WRITE|DELETE).
 
-    shutil.copy2 fails if the file is held open by another process (e.g. a
-    running browser). Using the Windows API with full sharing flags lets us
-    read and copy the file regardless.
+    shutil.copy2 uses Python's default open() which sets no sharing flags,
+    so it fails with PermissionError if another process has the file open.
+    FILE_SHARE_ALL lets us open the file regardless — unless the other process
+    opened it with dwShareMode=0 (exclusive), in which case we get
+    ERROR_SHARING_VIOLATION (32) and must close the browser first.
     """
     k32 = ctypes.windll.kernel32
     k32.CreateFileW.restype = ctypes.c_void_p
 
     GENERIC_READ   = 0x80000000
-    FILE_SHARE_ALL = 0x00000007   # READ | WRITE | DELETE
+    FILE_SHARE_ALL = 0x00000007
     OPEN_EXISTING  = 3
 
     handle = k32.CreateFileW(
-        ctypes.c_wchar_p(src),
-        GENERIC_READ,
-        FILE_SHARE_ALL,
-        None,
-        OPEN_EXISTING,
-        0,
-        None,
+        ctypes.c_wchar_p(src), GENERIC_READ, FILE_SHARE_ALL,
+        None, OPEN_EXISTING, 0, None,
     )
     INVALID_HANDLE = ctypes.c_void_p(-1).value
     if handle is None or handle == INVALID_HANDLE:
         err = k32.GetLastError()
-        raise PermissionError(
-            f"Cannot read cookies file (Windows error {err}).\n"
-            "The browser may be holding an exclusive lock — try closing it."
-        )
+        if err == 32:   # ERROR_SHARING_VIOLATION — caller raises BrowserLockedError
+            raise _SharingViolation()
+        raise PermissionError(f"Cannot open file (Windows error {err}): {src}")
 
     try:
         high = wt.DWORD(0)
@@ -62,13 +100,16 @@ def _copy_file_shared(src, dst):
         f.write(data)
 
 
+class _SharingViolation(Exception):
+    """Internal sentinel for ERROR_SHARING_VIOLATION (32)."""
+
+
 BROWSER_PATHS = {
     "edge":   r"Microsoft\Edge\User Data",
     "chrome": r"Google\Chrome\User Data",
     "brave":  r"BraveSoftware\Brave-Browser\User Data",
 }
 
-# Microseconds between 1601-01-01 (Chrome epoch) and 1970-01-01 (Unix epoch)
 _CHROME_EPOCH_OFFSET_US = 11_644_473_600 * 1_000_000
 
 
@@ -79,7 +120,7 @@ def _get_master_key(user_data_dir):
 
     b64 = data["os_crypt"]["encrypted_key"]
     raw = base64.b64decode(b64)
-    raw = raw[5:]  # strip 'DPAPI' prefix added by Chrome
+    raw = raw[5:]  # strip 'DPAPI' prefix
 
     import win32crypt
     _, master_key = win32crypt.CryptUnprotectData(raw, None, None, None, 0)
@@ -87,31 +128,25 @@ def _get_master_key(user_data_dir):
 
 
 def _aes_decrypt(encrypted_value, master_key):
-    """Decrypt a v10/v20 AES-256-GCM encrypted cookie value."""
     try:
         from Cryptodome.Cipher import AES
     except ImportError:
         from Crypto.Cipher import AES
 
-    # Format: 3-byte version tag | 12-byte nonce | ciphertext | 16-byte auth tag
     nonce = encrypted_value[3:15]
     payload = encrypted_value[15:]
     cipher = AES.new(master_key, AES.MODE_GCM, nonce=nonce)
-    plaintext = cipher.decrypt_and_verify(payload[:-16], payload[-16:])
-    return plaintext.decode("utf-8")
+    return cipher.decrypt_and_verify(payload[:-16], payload[-16:]).decode("utf-8")
 
 
 def _decrypt_value(encrypted_value, master_key):
     if not encrypted_value:
         return ""
-
     if encrypted_value[:3] in (b"v10", b"v20"):
         try:
             return _aes_decrypt(encrypted_value, master_key)
         except Exception:
             return ""
-
-    # Very old cookies: per-value DPAPI (no AES layer)
     try:
         import win32crypt
         _, plain = win32crypt.CryptUnprotectData(encrypted_value, None, None, None, 0)
@@ -140,20 +175,37 @@ def _find_cookies_db(user_data_dir, profile="Default"):
     return None
 
 
+def _copy_db(db_path, tmp_dir):
+    """Copy the SQLite DB + WAL/SHM to tmp_dir. Raises BrowserLockedError on error 32."""
+    tmp_db = os.path.join(tmp_dir, "cookies.db")
+    try:
+        _copy_file_shared(db_path, tmp_db)
+    except _SharingViolation:
+        raise BrowserLockedError(_db_browser(db_path))
+    for ext in ("-wal", "-shm"):
+        src = db_path + ext
+        if os.path.exists(src):
+            try:
+                _copy_file_shared(src, tmp_db + ext)
+            except (_SharingViolation, PermissionError):
+                pass  # SQLite will cope without WAL/SHM
+    return tmp_db
+
+
+def _db_browser(db_path):
+    """Best-guess browser name from a DB path (for error messages)."""
+    p = db_path.lower()
+    for name in ("brave", "edge", "chrome"):
+        if name in p:
+            return name
+    return "browser"
+
+
 def extract(browser, domain_filter=None):
-    """
-    Extract and decrypt cookies from a Windows Chromium browser.
+    """Extract and decrypt cookies from a Windows Chromium browser.
 
-    Args:
-        browser: 'edge', 'chrome', or 'brave'
-        domain_filter: optional string; only return cookies whose host_key
-                       contains this string (case-insensitive)
-
-    Returns:
-        List of cookie dicts with keys: domain, flag, path, secure, expiry, name, value
-
-    Raises:
-        EnvironmentError, FileNotFoundError, ImportError, Exception
+    Raises BrowserLockedError if the browser is running with an exclusive
+    file lock — call close_browser(browser) and retry.
     """
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     if not local_appdata:
@@ -167,7 +219,7 @@ def extract(browser, domain_filter=None):
     if not os.path.isdir(user_data_dir):
         raise FileNotFoundError(
             f"{browser.title()} profile directory not found:\n{user_data_dir}\n\n"
-            "Is the browser installed and has it been launched at least once?"
+            "Is the browser installed and has been launched at least once?"
         )
 
     master_key = _get_master_key(user_data_dir)
@@ -179,21 +231,9 @@ def extract(browser, domain_filter=None):
             "Try closing the browser and retrying."
         )
 
-    # Copy the DB and WAL/SHM files to a temp dir for a consistent read.
-    # Chromium uses WAL mode — recent cookies may only be in the -wal file.
-    # We use _copy_file_shared (CreateFile with FILE_SHARE_ALL) so the copy
-    # works even while the browser is running with the file open.
     tmp_dir = tempfile.mkdtemp()
     try:
-        tmp_db = os.path.join(tmp_dir, "cookies.db")
-        _copy_file_shared(db_path, tmp_db)
-        for ext in ("-wal", "-shm"):
-            src = db_path + ext
-            if os.path.exists(src):
-                try:
-                    _copy_file_shared(src, tmp_db + ext)
-                except PermissionError:
-                    pass  # WAL/SHM missing or locked — SQLite will cope
+        tmp_db = _copy_db(db_path, tmp_dir)
         return _read_db(tmp_db, master_key, domain_filter)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -209,20 +249,16 @@ def _read_db(db_path, master_key, domain_filter):
             "FROM cookies"
         )
         for host_key, path, is_secure, expires_utc, name, enc_value in cur.fetchall():
-            if domain_filter:
-                if domain_filter.lower() not in (host_key or "").lower():
-                    continue
-
-            value = _decrypt_value(enc_value, master_key)
-
+            if domain_filter and domain_filter.lower() not in (host_key or "").lower():
+                continue
             cookies.append({
                 "domain": host_key or "",
-                "flag": "TRUE" if (host_key or "").startswith(".") else "FALSE",
-                "path": path or "/",
+                "flag":   "TRUE" if (host_key or "").startswith(".") else "FALSE",
+                "path":   path or "/",
                 "secure": "TRUE" if is_secure else "FALSE",
                 "expiry": str(_chrome_ts_to_unix(expires_utc)),
-                "name": name or "",
-                "value": value,
+                "name":   name or "",
+                "value":  _decrypt_value(enc_value, master_key),
             })
     finally:
         con.close()

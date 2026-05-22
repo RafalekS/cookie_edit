@@ -1,7 +1,7 @@
 import sys
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QDialogButtonBox, QMessageBox, QPushButton,
 )
 from PyQt6.QtCore import Qt
@@ -111,10 +111,36 @@ class BrowserImportDialog(QDialog):
         try:
             cookies = import_browser_cookies(browser, domain)
         except Exception as e:
-            QMessageBox.critical(self, "Import Error", str(e))
-            self._status_label.setText("")
-            self._import_btn.setEnabled(True)
-            return
+            # Check for exclusive-lock error and offer to close the browser
+            from modules.win_cookies import BrowserLockedError
+            if isinstance(e, BrowserLockedError):
+                r = QMessageBox.question(
+                    self, "Browser Is Running",
+                    f"{browser.title()} has the cookies file locked.\n\n"
+                    f"Close {browser.title()} automatically and import?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if r == QMessageBox.StandardButton.Yes:
+                    self._status_label.setText(f"Closing {browser.title()}…")
+                    QApplication.processEvents()
+                    from modules.win_cookies import close_browser
+                    close_browser(browser)
+                    try:
+                        cookies = import_browser_cookies(browser, domain)
+                    except Exception as e2:
+                        QMessageBox.critical(self, "Import Error", str(e2))
+                        self._status_label.setText("")
+                        self._import_btn.setEnabled(True)
+                        return
+                else:
+                    self._status_label.setText("")
+                    self._import_btn.setEnabled(True)
+                    return
+            else:
+                QMessageBox.critical(self, "Import Error", str(e))
+                self._status_label.setText("")
+                self._import_btn.setEnabled(True)
+                return
 
         if not cookies:
             self._status_label.setText("No cookies found. Check the browser or domain filter.")
