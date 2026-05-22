@@ -1,12 +1,14 @@
 import sys
 import os
 import ctypes
+import subprocess
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QToolBar, QStatusBar, QFileDialog, QMessageBox,
     QLineEdit, QLabel, QComboBox, QDialog, QHeaderView,
     QAbstractItemView, QPushButton, QMenu, QListWidget, QDialogButtonBox,
+    QPlainTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QKeySequence, QIcon
@@ -20,6 +22,8 @@ from modules.append_dialog import DomainImportDialog
 from modules.filter_dialog import FilterEditDialog, SCOPE_KEYS as FILTER_SCOPE_KEYS
 from modules.utils import (load_config, save_config, validate_cookies_for_format,
                            load_saved_filters, save_saved_filters)
+from modules.workflow import WorkflowConfigDialog, DEFAULT_WORKFLOW_CONFIG
+from modules.browser_import import import_browser_cookies
 
 FORMAT_KEYS = ["netscape", "json", "header"]
 FORMAT_LABELS = ["Netscape / cookies.txt", "JSON (Cookie-Editor)", "Header String"]
@@ -150,6 +154,11 @@ class MainWindow(QMainWindow):
         # Export
         ex = mb.addMenu("Export")
         self._add_action(ex, "Export by Domain…", self._export_by_domain, QKeySequence("Ctrl+E"))
+
+        # Workflow
+        wm = mb.addMenu("Workflow")
+        self._add_action(wm, "Run Distribution…", self._run_workflow, QKeySequence("Ctrl+Shift+R"))
+        self._add_action(wm, "Configure Workflow…", self._configure_workflow)
 
         # Toolbar
         tb = QToolBar("Main")
@@ -756,6 +765,186 @@ class MainWindow(QMainWindow):
             all_cookies, default_directory=default,
             preselected_domains=preselected, parent=self,
         )
+        dlg.exec()
+
+    # ---------------------------------------------------------- Workflow --
+
+    def _configure_workflow(self):
+        wf = self._config.get("workflow", DEFAULT_WORKFLOW_CONFIG.copy())
+        filter_names = [f["name"] for f in load_saved_filters()]
+        if not filter_names:
+            QMessageBox.warning(
+                self, "No Saved Filters",
+                "Create at least one saved filter first (Quick Filter ▾ → New saved filter…).\n"
+                "The workflow needs a filter to select which cookies to distribute."
+            )
+            return
+        dlg = WorkflowConfigDialog(wf, filter_names, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._config["workflow"] = dlg.get_config()
+        self._persist_config()
+
+    def _run_workflow(self):
+        wf = self._config.get("workflow", {})
+        all_path      = wf.get("all_cookies_path", "").strip()
+        filt_path     = wf.get("filtered_cookies_path", "").strip()
+        filter_name   = wf.get("filter_name", "").strip()
+        browser       = wf.get("browser", "brave")
+        commands      = wf.get("post_save_commands", [])
+
+        if not all_path or not filt_path or not filter_name:
+            QMessageBox.warning(
+                self, "Workflow Not Configured",
+                "Please configure the workflow first (Workflow → Configure Workflow…)."
+            )
+            return
+
+        # Build the run dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Distribution Workflow")
+        dlg.setMinimumSize(680, 420)
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        layout = QVBoxLayout(dlg)
+
+        log = QPlainTextEdit()
+        log.setReadOnly(True)
+        log.setFont(self.font())
+        layout.addWidget(log)
+
+        btn_row = QHBoxLayout()
+        run_btn   = QPushButton("Run")
+        close_btn = QPushButton("Close")
+        btn_row.addWidget(run_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+        close_btn.clicked.connect(dlg.accept)
+
+        def append(msg):
+            log.appendPlainText(msg)
+            QApplication.processEvents()
+
+        def run_workflow():
+            run_btn.setEnabled(False)
+            errors = []
+
+            # Step 1 — Import
+            append(f"[1/5] Importing all cookies from {browser}…")
+            try:
+                cookies = import_browser_cookies(browser)
+            except Exception as e:
+                append(f"  ERROR: {e}")
+                run_btn.setEnabled(True)
+                return
+            append(f"  OK — {len(cookies)} cookies imported")
+
+            # Load into table (netscape format, no file associated yet)
+            self._source_model.load(cookies)
+            self._apply_column_visibility("netscape")
+            self._table.setSortingEnabled(True)
+            self._current_format = "netscape"
+            self._current_file = None
+            self._comments = []
+            self._format_combo.blockSignals(True)
+            self._format_combo.setCurrentIndex(FORMAT_KEYS.index("netscape"))
+            self._format_combo.setEnabled(True)
+            self._format_combo.blockSignals(False)
+            self._proxy.set_filter("", CookieFilterProxyModel.SCOPE_BOTH)
+            self._filter_edit.blockSignals(True)
+            self._filter_edit.clear()
+            self._filter_edit.blockSignals(False)
+            self._update_status()
+            QApplication.processEvents()
+
+            # Step 2 — Save all cookies
+            append(f"[2/5] Saving all {len(cookies)} cookies to:\n  {all_path}")
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(all_path)), exist_ok=True)
+                save_file(all_path, {"cookies": cookies, "comments": []}, "netscape")
+                self._current_file = all_path
+                self._set_unsaved(False)
+                self._update_status()
+            except Exception as e:
+                append(f"  ERROR: {e}")
+                run_btn.setEnabled(True)
+                return
+            append(f"  OK")
+
+            # Step 3 — Apply filter
+            append(f"[3/5] Applying filter '{filter_name}'…")
+            saved_filters = load_saved_filters()
+            target = next((f for f in saved_filters if f["name"] == filter_name), None)
+            if target is None:
+                append(f"  ERROR: saved filter '{filter_name}' not found.\n"
+                       f"  Create it via Quick Filter ▾ → New saved filter…")
+                run_btn.setEnabled(True)
+                return
+            self._proxy.set_filter(target["text"], target["scope"])
+            self._filter_edit.blockSignals(True)
+            self._filter_edit.setText(target["text"])
+            self._filter_edit.blockSignals(False)
+            scope_idx = SCOPE_OPTIONS.index(target["scope"]) if target["scope"] in SCOPE_OPTIONS else 0
+            self._scope_combo.blockSignals(True)
+            self._scope_combo.setCurrentIndex(scope_idx)
+            self._scope_combo.blockSignals(False)
+            self._update_status()
+            QApplication.processEvents()
+            visible = self._proxy.rowCount()
+            append(f"  OK — {visible} cookies match the filter")
+
+            # Step 4 — Save filtered cookies
+            append(f"[4/5] Saving {visible} filtered cookies to:\n  {filt_path}")
+            all_src = self._source_model.all_cookies()
+            filtered_cookies = [
+                all_src[self._proxy.mapToSource(self._proxy.index(i, 0)).row()]
+                for i in range(visible)
+            ]
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(filt_path)), exist_ok=True)
+                save_file(filt_path, {"cookies": filtered_cookies, "comments": []}, "netscape")
+            except Exception as e:
+                append(f"  ERROR: {e}")
+                run_btn.setEnabled(True)
+                return
+            append(f"  OK")
+
+            # Step 5 — Post-save commands
+            if commands:
+                append(f"[5/5] Running {len(commands)} post-save command(s)…")
+                creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                for i, cmd_template in enumerate(commands, 1):
+                    cmd = cmd_template.replace("{all_path}", all_path).replace("{filtered_path}", filt_path)
+                    append(f"  [{i}] {cmd}")
+                    try:
+                        result = subprocess.run(
+                            cmd, shell=True, capture_output=True, text=True,
+                            creationflags=creationflags,
+                        )
+                        if result.stdout.strip():
+                            for line in result.stdout.strip().splitlines():
+                                append(f"      {line}")
+                        if result.returncode != 0:
+                            append(f"  ERROR (exit {result.returncode})")
+                            if result.stderr.strip():
+                                for line in result.stderr.strip().splitlines():
+                                    append(f"      {line}")
+                            errors.append(cmd)
+                        else:
+                            append(f"      exit 0 — OK")
+                    except Exception as e:
+                        append(f"  ERROR: {e}")
+                        errors.append(cmd)
+            else:
+                append("[5/5] No post-save commands configured — skipping")
+
+            if errors:
+                append(f"\nWorkflow finished with {len(errors)} command error(s).")
+            else:
+                append("\nWorkflow complete.")
+            run_btn.setEnabled(True)
+
+        run_btn.clicked.connect(run_workflow)
         dlg.exec()
 
     # -------------------------------------------------------------- Close --
