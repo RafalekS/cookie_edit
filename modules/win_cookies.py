@@ -128,17 +128,26 @@ def extract(browser, domain_filter=None):
             "Try closing the browser and retrying."
         )
 
-    # Copy the DB to avoid SQLite lock from a running browser
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
-    tmp.close()
+    # Copy the DB and any WAL/SHM files to a temp dir for a consistent read.
+    # Chromium uses WAL mode — recent cookies may only be in the -wal file.
+    # A PermissionError here means the browser is running with an exclusive lock.
+    tmp_dir = tempfile.mkdtemp()
     try:
-        shutil.copy2(db_path, tmp.name)
-        return _read_db(tmp.name, master_key, domain_filter)
-    finally:
+        tmp_db = os.path.join(tmp_dir, "cookies.db")
         try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+            shutil.copy2(db_path, tmp_db)
+            for ext in ("-wal", "-shm"):
+                src = db_path + ext
+                if os.path.exists(src):
+                    shutil.copy2(src, tmp_db + ext)
+        except PermissionError:
+            raise PermissionError(
+                f"{browser.title()} is running and has locked the cookies file.\n\n"
+                "Close the browser and try again."
+            )
+        return _read_db(tmp_db, master_key, domain_filter)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _read_db(db_path, master_key, domain_filter):
