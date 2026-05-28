@@ -835,32 +835,17 @@ class MainWindow(QMainWindow):
             run_btn.setEnabled(False)
             errors = []
 
-            # Step 1 — Import
-            append(f"[1/5] Importing all cookies from {browser}…")
+            # Step 1 — Import via CDP (closes browser, launches headless, reads cookies)
+            append(f"[1/5] Importing all cookies from {browser} (via CDP)…")
+            append(f"  Closing {browser.title()} and launching headless — please wait…")
+            QApplication.processEvents()
             try:
                 cookies = import_browser_cookies(browser)
-            except BrowserLockedError:
-                append(f"  {browser.title()} has the file locked — closing it…")
-                QApplication.processEvents()
-                close_browser(browser)
-                append(f"  {browser.title()} closed — retrying import…")
-                try:
-                    cookies = import_browser_cookies(browser)
-                except Exception as e:
-                    append(f"  ERROR: {e}")
-                    run_btn.setEnabled(True)
-                    return
             except Exception as e:
                 append(f"  ERROR: {e}")
                 run_btn.setEnabled(True)
                 return
-            empty_values = sum(1 for c in cookies if not c.get("value"))
             append(f"  OK — {len(cookies)} cookies imported")
-            if empty_values:
-                append(f"  WARNING: {empty_values} cookies have empty values.")
-                append(f"  This usually means v20 app-bound encryption (Chrome/Brave 127+)")
-                append(f"  and the app-bound key could not be decrypted.")
-                append(f"  Try running the workflow with the browser closed.")
 
             # Load into table (netscape format, no file associated yet)
             self._source_model.load(cookies)

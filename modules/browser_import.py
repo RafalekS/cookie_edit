@@ -13,8 +13,12 @@ CHROMIUM_BROWSERS = {"chrome", "brave", "edge"}
 def import_browser_cookies(browser, domain=None):
     """Import cookies from a browser without showing a dialog.
 
-    Works on any platform; on Windows uses direct DPAPI+AES-GCM for
-    Chromium browsers, browser_cookie3 for Firefox / non-Windows.
+    On Windows + Chromium: uses CDP (closes the browser, launches it headless
+    with --remote-debugging-port, reads cookies, terminates the headless process).
+    This handles v20 app-bound encryption (Chrome/Brave 127+) which cannot be
+    decrypted from the SQLite file without the browser's Elevation Service.
+
+    On Firefox or non-Windows: uses browser_cookie3.
     Returns a list of cookie dicts. Raises on error.
     """
     browser = browser.lower()
@@ -26,8 +30,8 @@ def import_browser_cookies(browser, domain=None):
                 "pywin32 is required for Chromium browser import on Windows.\n\n"
                 "Run:  pip install pywin32"
             )
-        from modules.win_cookies import extract
-        return extract(browser, domain_filter=domain)
+        from modules.win_cookies import extract_cdp
+        return extract_cdp(browser, domain_filter=domain)
 
     try:
         import browser_cookie3
@@ -105,42 +109,17 @@ class BrowserImportDialog(QDialog):
         browser = self._browser_combo.currentText().lower()
         domain = self._domain_edit.text().strip() or None
 
-        self._status_label.setText("Importing, please wait…")
+        cdp_note = " (will close & reopen browser)" if sys.platform == "win32" and browser in CHROMIUM_BROWSERS else ""
+        self._status_label.setText(f"Importing, please wait{cdp_note}…")
         self._import_btn.setEnabled(False)
 
         try:
             cookies = import_browser_cookies(browser, domain)
         except Exception as e:
-            # Check for exclusive-lock error and offer to close the browser
-            from modules.win_cookies import BrowserLockedError
-            if isinstance(e, BrowserLockedError):
-                r = QMessageBox.question(
-                    self, "Browser Is Running",
-                    f"{browser.title()} has the cookies file locked.\n\n"
-                    f"Close {browser.title()} automatically and import?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if r == QMessageBox.StandardButton.Yes:
-                    self._status_label.setText(f"Closing {browser.title()}…")
-                    QApplication.processEvents()
-                    from modules.win_cookies import close_browser
-                    close_browser(browser)
-                    try:
-                        cookies = import_browser_cookies(browser, domain)
-                    except Exception as e2:
-                        QMessageBox.critical(self, "Import Error", str(e2))
-                        self._status_label.setText("")
-                        self._import_btn.setEnabled(True)
-                        return
-                else:
-                    self._status_label.setText("")
-                    self._import_btn.setEnabled(True)
-                    return
-            else:
-                QMessageBox.critical(self, "Import Error", str(e))
-                self._status_label.setText("")
-                self._import_btn.setEnabled(True)
-                return
+            QMessageBox.critical(self, "Import Error", str(e))
+            self._status_label.setText("")
+            self._import_btn.setEnabled(True)
+            return
 
         if not cookies:
             self._status_label.setText("No cookies found. Check the browser or domain filter.")
