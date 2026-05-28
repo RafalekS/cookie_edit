@@ -2,6 +2,14 @@
 Direct Windows Chromium cookie extraction (Edge, Chrome, Brave).
 Reads the SQLite cookies DB and decrypts values without browser_cookie3.
 Requires: pywin32 (win32crypt), pycryptodome or pycryptodomex (AES-GCM).
+
+Cookie encryption versions
+--------------------------
+v10  – AES-256-GCM, key = DPAPI(user-scope) of 'encrypted_key' in Local State
+v20  – AES-256-GCM, key = app-bound encryption (Chrome 127+).
+       The app-bound key is stored as 'app_bound_encrypted_key' in Local State.
+       We try user-scope then machine-scope DPAPI; this covers most Windows
+       configurations.  If neither works the value is returned as "".
 """
 
 import base64
@@ -38,8 +46,7 @@ _NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
 
 
 def close_browser(browser):
-    """Gracefully close a Chromium browser; force-kill if it won't quit in 8 s.
-    Returns when the process is gone."""
+    """Gracefully close a Chromium browser; force-kill if it won't quit in 8 s."""
     exe = _BROWSER_EXE.get(browser.lower(), f"{browser}.exe")
     subprocess.run(["taskkill", "/im", exe], capture_output=True, creationflags=_NO_WINDOW)
     deadline = time.time() + 8
@@ -56,14 +63,7 @@ def close_browser(browser):
 
 
 def _copy_file_shared(src, dst):
-    """Copy src → dst using CreateFile(FILE_SHARE_READ|WRITE|DELETE).
-
-    shutil.copy2 uses Python's default open() which sets no sharing flags,
-    so it fails with PermissionError if another process has the file open.
-    FILE_SHARE_ALL lets us open the file regardless — unless the other process
-    opened it with dwShareMode=0 (exclusive), in which case we get
-    ERROR_SHARING_VIOLATION (32) and must close the browser first.
-    """
+    """Copy src → dst using CreateFile(FILE_SHARE_READ|WRITE|DELETE)."""
     k32 = ctypes.windll.kernel32
     k32.CreateFileW.restype = ctypes.c_void_p
 
@@ -78,7 +78,7 @@ def _copy_file_shared(src, dst):
     INVALID_HANDLE = ctypes.c_void_p(-1).value
     if handle is None or handle == INVALID_HANDLE:
         err = k32.GetLastError()
-        if err == 32:   # ERROR_SHARING_VIOLATION — caller raises BrowserLockedError
+        if err == 32:
             raise _SharingViolation()
         raise PermissionError(f"Cannot open file (Windows error {err}): {src}")
 
@@ -101,7 +101,7 @@ def _copy_file_shared(src, dst):
 
 
 class _SharingViolation(Exception):
-    """Internal sentinel for ERROR_SHARING_VIOLATION (32)."""
+    pass
 
 
 BROWSER_PATHS = {
@@ -113,43 +113,80 @@ BROWSER_PATHS = {
 _CHROME_EPOCH_OFFSET_US = 11_644_473_600 * 1_000_000
 
 
-def _get_master_key(user_data_dir):
-    local_state = os.path.join(user_data_dir, "Local State")
-    with open(local_state, "r", encoding="utf-8") as f:
-        data = json.load(f)
+def _get_keys(user_data_dir):
+    """Return (v10_key, v20_key) AES keys from Local State.
 
-    b64 = data["os_crypt"]["encrypted_key"]
-    raw = base64.b64decode(b64)
-    raw = raw[5:]  # strip 'DPAPI' prefix
-
+    v10_key: from 'encrypted_key', user-scope DPAPI — always present.
+    v20_key: from 'app_bound_encrypted_key' (Chrome 127+).
+             Tries user-scope then machine-scope DPAPI.  None if unavailable.
+    """
     import win32crypt
-    _, master_key = win32crypt.CryptUnprotectData(raw, None, None, None, 0)
-    return master_key
+
+    local_state_path = os.path.join(user_data_dir, "Local State")
+    with open(local_state_path, "r", encoding="utf-8") as f:
+        ls = json.load(f)
+
+    # v10 key
+    raw = base64.b64decode(ls["os_crypt"]["encrypted_key"])[5:]  # strip 'DPAPI'
+    _, v10_key = win32crypt.CryptUnprotectData(raw, None, None, None, 0)
+
+    # v20 app-bound key (Chrome 127+)
+    v20_key = None
+    app_b64 = ls.get("os_crypt", {}).get("app_bound_encrypted_key", "")
+    if app_b64:
+        try:
+            app_raw = base64.b64decode(app_b64)
+            if app_raw[:4] == b"APPB":
+                app_raw = app_raw[4:]
+            # Try user-scope first, then machine-scope (CRYPTPROTECT_LOCAL_MACHINE = 4)
+            for flag in (0, 4):
+                try:
+                    _, v20_key = win32crypt.CryptUnprotectData(app_raw, None, None, None, flag)
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    return v10_key, v20_key
 
 
-def _aes_decrypt(encrypted_value, master_key):
+def _aes_decrypt(data, key):
     try:
         from Cryptodome.Cipher import AES
     except ImportError:
         from Crypto.Cipher import AES
-
-    nonce = encrypted_value[3:15]
-    payload = encrypted_value[15:]
-    cipher = AES.new(master_key, AES.MODE_GCM, nonce=nonce)
+    # Format: prefix(3) | nonce(12) | ciphertext | tag(16)
+    nonce   = data[3:15]
+    payload = data[15:]
+    cipher  = AES.new(key, AES.MODE_GCM, nonce=nonce)
     return cipher.decrypt_and_verify(payload[:-16], payload[-16:]).decode("utf-8")
 
 
-def _decrypt_value(encrypted_value, master_key):
-    if not encrypted_value:
+def _decrypt_value(enc, v10_key, v20_key):
+    if not enc:
         return ""
-    if encrypted_value[:3] in (b"v10", b"v20"):
+
+    prefix = enc[:3]
+
+    if prefix == b"v10":
         try:
-            return _aes_decrypt(encrypted_value, master_key)
+            return _aes_decrypt(enc, v10_key)
         except Exception:
             return ""
+
+    if prefix == b"v20":
+        if v20_key:
+            try:
+                return _aes_decrypt(enc, v20_key)
+            except Exception:
+                return ""
+        return ""  # app-bound key unavailable
+
+    # Legacy: per-value DPAPI (very old cookies)
     try:
         import win32crypt
-        _, plain = win32crypt.CryptUnprotectData(encrypted_value, None, None, None, 0)
+        _, plain = win32crypt.CryptUnprotectData(enc, None, None, None, 0)
         return plain.decode("utf-8")
     except Exception:
         return ""
@@ -176,7 +213,6 @@ def _find_cookies_db(user_data_dir, profile="Default"):
 
 
 def _copy_db(db_path, tmp_dir):
-    """Copy the SQLite DB + WAL/SHM to tmp_dir. Raises BrowserLockedError on error 32."""
     tmp_db = os.path.join(tmp_dir, "cookies.db")
     try:
         _copy_file_shared(db_path, tmp_db)
@@ -188,12 +224,11 @@ def _copy_db(db_path, tmp_dir):
             try:
                 _copy_file_shared(src, tmp_db + ext)
             except (_SharingViolation, PermissionError):
-                pass  # SQLite will cope without WAL/SHM
+                pass
     return tmp_db
 
 
 def _db_browser(db_path):
-    """Best-guess browser name from a DB path (for error messages)."""
     p = db_path.lower()
     for name in ("brave", "edge", "chrome"):
         if name in p:
@@ -204,8 +239,8 @@ def _db_browser(db_path):
 def extract(browser, domain_filter=None):
     """Extract and decrypt cookies from a Windows Chromium browser.
 
-    Raises BrowserLockedError if the browser is running with an exclusive
-    file lock — call close_browser(browser) and retry.
+    Returns list of cookie dicts.
+    Raises BrowserLockedError if the browser holds an exclusive file lock.
     """
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     if not local_appdata:
@@ -222,7 +257,7 @@ def extract(browser, domain_filter=None):
             "Is the browser installed and has been launched at least once?"
         )
 
-    master_key = _get_master_key(user_data_dir)
+    v10_key, v20_key = _get_keys(user_data_dir)
 
     db_path = _find_cookies_db(user_data_dir)
     if not db_path:
@@ -234,12 +269,12 @@ def extract(browser, domain_filter=None):
     tmp_dir = tempfile.mkdtemp()
     try:
         tmp_db = _copy_db(db_path, tmp_dir)
-        return _read_db(tmp_db, master_key, domain_filter)
+        return _read_db(tmp_db, v10_key, v20_key, domain_filter)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _read_db(db_path, master_key, domain_filter):
+def _read_db(db_path, v10_key, v20_key, domain_filter):
     cookies = []
     con = sqlite3.connect(db_path)
     try:
@@ -258,7 +293,7 @@ def _read_db(db_path, master_key, domain_filter):
                 "secure": "TRUE" if is_secure else "FALSE",
                 "expiry": str(_chrome_ts_to_unix(expires_utc)),
                 "name":   name or "",
-                "value":  _decrypt_value(enc_value, master_key),
+                "value":  _decrypt_value(enc_value, v10_key, v20_key),
             })
     finally:
         con.close()

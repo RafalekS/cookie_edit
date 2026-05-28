@@ -854,7 +854,13 @@ class MainWindow(QMainWindow):
                 append(f"  ERROR: {e}")
                 run_btn.setEnabled(True)
                 return
+            empty_values = sum(1 for c in cookies if not c.get("value"))
             append(f"  OK — {len(cookies)} cookies imported")
+            if empty_values:
+                append(f"  WARNING: {empty_values} cookies have empty values.")
+                append(f"  This usually means v20 app-bound encryption (Chrome/Brave 127+)")
+                append(f"  and the app-bound key could not be decrypted.")
+                append(f"  Try running the workflow with the browser closed.")
 
             # Load into table (netscape format, no file associated yet)
             self._source_model.load(cookies)
