@@ -51,6 +51,8 @@ def parse_netscape(filepath):
                 comments.append((line_num, line))
                 continue
             parts = line.split("\t")
+            if len(parts) == 6:
+                parts.append("")  # empty value
             if len(parts) >= 7:
                 cookies.append({
                     "domain": parts[0],
@@ -75,12 +77,13 @@ def save_netscape(filepath, cookies, comments):
 
     for c in cookies:
         domain = c.get("domain", "")
-        flag = c.get("flag", "FALSE")
         path = c.get("path", "/")
         secure = c.get("secure", "FALSE")
         expiry = c.get("expiry", "0")
         name = c.get("name", "")
         value = c.get("value", "")
+        # domain_specified must match whether domain starts with a dot
+        flag = "TRUE" if domain.startswith(".") else "FALSE"
         lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
 
     with open(filepath, "w", encoding="utf-8", newline="\n") as f:
