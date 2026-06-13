@@ -45,7 +45,7 @@ def parse_netscape(filepath):
     comments = []
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         for line_num, raw in enumerate(f):
-            line = raw.rstrip("\n")
+            line = raw.rstrip("\r\n")
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 comments.append((line_num, line))
@@ -86,8 +86,8 @@ def save_netscape(filepath, cookies, comments):
         flag = "TRUE" if domain.startswith(".") else "FALSE"
         lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
 
-    with open(filepath, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+    with open(filepath, "wb") as f:
+        f.write(("\n".join(lines) + "\n").encode("utf-8"))
 
 
 def parse_json(filepath):
